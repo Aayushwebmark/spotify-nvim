@@ -53,7 +53,7 @@ Control Spotify from Neovim. macOS-first (uses AppleScript + Spotify Web API).
     { "<leader>md", "<cmd>SpotifyDevices<cr>",   desc = "Devices" },
     { "<leader>mL", "<cmd>SpotifyLiked<cr>",     desc = "Liked songs" },
     { "<leader>mH", "<cmd>SpotifyRecent<cr>",    desc = "Recently played" },
-    { "<leader>mT", "<cmd>SpotifyTop<cr>",       desc = "Top tracks" },
+    { "<leader>mN", "<cmd>SpotifyNewReleases<cr>", desc = "New releases" },
   },
   opts = {
     status = { position = "top-right" },
@@ -81,7 +81,7 @@ Control Spotify from Neovim. macOS-first (uses AppleScript + Spotify Web API).
 | `:SpotifyPlaylists` | Your playlists → drill into tracks |
 | `:SpotifyLiked` | Liked songs |
 | `:SpotifyRecent` | Recently played |
-| `:SpotifyTop` | Your top tracks |
+| `:SpotifyNewReleases` | Browse new album releases → drill into tracks |
 | `:SpotifyQueue` | Queue view |
 | `:SpotifyDevices` | Transfer playback |
 

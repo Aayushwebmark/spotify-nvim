@@ -17,13 +17,25 @@ local defaults = {
   status = {
     position = "top-right",
     width = 38,
-    refresh_ms = 1000,
+    refresh_ms = 2000,
     border = "rounded",
   },
 }
 
 local cfg = vim.deepcopy(defaults)
-local state = { token_cache = nil, status = { win = nil, buf = nil, timer = nil } }
+
+-- Persist state globally so :Lazy reload kills orphaned timers / windows
+_G.__spotify_nvim_state = _G.__spotify_nvim_state or { status = { win = nil, buf = nil, timer = nil } }
+local state = _G.__spotify_nvim_state
+
+-- On module load: kill any timer left over from previous module instance
+if state.status.timer then
+  pcall(function() state.status.timer:stop(); state.status.timer:close() end)
+  state.status.timer = nil
+end
+if state.status.win and not pcall(vim.api.nvim_win_is_valid, state.status.win) then
+  state.status.win = nil
+end
 
 -- ============ low-level helpers ============
 
@@ -52,6 +64,18 @@ end
 
 local function osa_capture(script)
   return vim.trim(vim.fn.system({ "osascript", "-e", script }))
+end
+
+local function osa_capture_async(script, cb)
+  vim.system({ "osascript", "-e", script }, { text = true }, function(res)
+    vim.schedule(function() cb(vim.trim(res.stdout or "")) end)
+  end)
+end
+
+local function curl_async(args, cb)
+  vim.system(args, { text = true }, function(res)
+    vim.schedule(function() cb(res.stdout or "") end)
+  end)
 end
 
 -- ============ auth ============
@@ -434,16 +458,35 @@ function M.recently_played()
     })
 end
 
-function M.top_tracks()
-  local res = api("GET", "/me/top/tracks", { limit = 30, time_range = "short_term" })
+function M.new_releases()
+  local res = api("GET", "/browse/new-releases", { limit = 50 })
+  if not res or not res.albums then return end
+  local items = {}
+  for _, a in ipairs(res.albums.items) do
+    local artists = {}
+    for _, ar in ipairs(a.artists) do table.insert(artists, ar.name) end
+    table.insert(items, {
+      display = string.format("%-40s  %-24s  %s",
+        a.name:sub(1, 40),
+        table.concat(artists, ", "):sub(1, 24),
+        a.release_date or ""),
+      uri = a.uri, id = a.id, name = a.name,
+    })
+  end
+  open_picker("New Releases", items, function(v) M.album_tracks(v.id, v.name, v.uri) end)
+end
+
+function M.album_tracks(album_id, album_name, album_uri)
+  local res = api("GET", "/albums/" .. album_id .. "/tracks", { limit = 50 })
   if not res or not res.items then return end
   local items = {}
-  for _, t in ipairs(res.items) do table.insert(items, track_entry(t)) end
-  open_picker("Your Top Tracks", items,
-    function(v) M.play_uri(v.uri) end,
-    {
-      { key = "<C-q>", fn = function(v) M.add_to_queue(v.uri) end },
-    })
+  for _, t in ipairs(res.items) do
+    t.album = { name = album_name }
+    table.insert(items, track_entry(t))
+  end
+  open_picker("Album: " .. album_name, items,
+    function(v) M.play_uri(v.uri, album_uri) end,
+    { { key = "<C-q>", fn = function(v) M.add_to_queue(v.uri) end } })
 end
 
 function M.queue()
@@ -498,6 +541,63 @@ local function progress_bar(pos, dur, width)
   return string.rep("▰", filled) .. string.rep("▱", width - filled)
 end
 
+local STATUS_SCRIPT = [[
+  tell application "Spotify"
+    if it is running then
+      set s to player state as string
+      set t to name of current track
+      set a to artist of current track
+      set al to album of current track
+      set dur to (duration of current track) / 1000
+      set pos to player position
+      set vol to sound volume
+      return s & "|" & t & "|" & a & "|" & al & "|" & dur & "|" & pos & "|" & vol
+    else
+      return "off"
+    end if
+  end tell
+]]
+
+local function parse_status(raw)
+  if not raw or raw == "off" or raw == "" then return nil end
+  local p = vim.split(raw, "|")
+  if not p[2] or p[2] == "" then return nil end
+  return {
+    state = p[1], track = p[2], artist = p[3], album = p[4],
+    duration = tonumber(p[5]) or 0,
+    position = tonumber(p[6]) or 0,
+    volume = tonumber(p[7]) or 0,
+    source = "local",
+  }
+end
+
+local function fetch_local_status_async(cb)
+  osa_capture_async(STATUS_SCRIPT, function(raw)
+    local st = parse_status(raw)
+    if st then cb(st); return end
+    -- fallback Web API
+    local token = user_token()
+    if not token then cb(nil); return end
+    curl_async({ "curl", "-s", "https://api.spotify.com/v1/me/player",
+      "-H", "Authorization: Bearer " .. token }, function(body)
+      local ok, r = pcall(vim.fn.json_decode, body)
+      if not ok or not r or not r.item then cb(nil); return end
+      local artists = {}
+      for _, a in ipairs(r.item.artists or {}) do table.insert(artists, a.name) end
+      cb({
+        state = r.is_playing and "playing" or "paused",
+        track = r.item.name or "",
+        artist = table.concat(artists, ", "),
+        album = (r.item.album and r.item.album.name) or "",
+        duration = (r.item.duration_ms or 0) / 1000,
+        position = (r.progress_ms or 0) / 1000,
+        volume = (r.device and r.device.volume_percent) or 0,
+        source = "remote",
+      })
+    end)
+  end)
+end
+
 local function fetch_local_status()
   local script = [[
     tell application "Spotify"
@@ -516,13 +616,32 @@ local function fetch_local_status()
     end tell
   ]]
   local raw = osa_capture(script)
-  if raw == "off" then return nil end
-  local p = vim.split(raw, "|")
+  if raw and raw ~= "off" and raw ~= "" then
+    local p = vim.split(raw, "|")
+    if p[2] and p[2] ~= "" then
+      return {
+        state = p[1], track = p[2], artist = p[3], album = p[4],
+        duration = tonumber(p[5]) or 0,
+        position = tonumber(p[6]) or 0,
+        volume = tonumber(p[7]) or 0,
+        source = "local",
+      }
+    end
+  end
+  -- fallback: Web API (works when playing on phone/web/other device)
+  local r = api("GET", "/me/player")
+  if not r or not r.item then return nil end
+  local artists = {}
+  for _, a in ipairs(r.item.artists or {}) do table.insert(artists, a.name) end
   return {
-    state = p[1], track = p[2], artist = p[3], album = p[4],
-    duration = tonumber(p[5]) or 0,
-    position = tonumber(p[6]) or 0,
-    volume = tonumber(p[7]) or 0,
+    state = r.is_playing and "playing" or "paused",
+    track = r.item.name or "",
+    artist = table.concat(artists, ", "),
+    album = (r.item.album and r.item.album.name) or "",
+    duration = (r.item.duration_ms or 0) / 1000,
+    position = (r.progress_ms or 0) / 1000,
+    volume = (r.device and r.device.volume_percent) or 0,
+    source = "remote",
   }
 end
 
@@ -537,13 +656,30 @@ local function truncate(s, n)
   return s:sub(1, n - 1) .. "…"
 end
 
+local remote_cache = { data = {}, fetched_at = 0 }
 local function get_remote_state()
+  if os.time() - remote_cache.fetched_at < 5 then return remote_cache.data end
   local r = api("GET", "/me/player")
-  if not r then return {} end
-  return {
-    shuffle = r.shuffle_state,
-    repeat_mode = r.repeat_state,
-  }
+  if r then
+    remote_cache.data = { shuffle = r.shuffle_state, repeat_mode = r.repeat_state }
+    remote_cache.fetched_at = os.time()
+  end
+  return remote_cache.data
+end
+
+local function get_remote_state_async(cb)
+  if os.time() - remote_cache.fetched_at < 5 then cb(remote_cache.data); return end
+  local token = user_token()
+  if not token then cb({}); return end
+  curl_async({ "curl", "-s", "https://api.spotify.com/v1/me/player",
+    "-H", "Authorization: Bearer " .. token }, function(body)
+    local ok, r = pcall(vim.fn.json_decode, body)
+    if ok and r then
+      remote_cache.data = { shuffle = r.shuffle_state, repeat_mode = r.repeat_state }
+      remote_cache.fetched_at = os.time()
+    end
+    cb(remote_cache.data)
+  end)
 end
 
 local BUTTONS = {}
@@ -627,6 +763,11 @@ function M.toggle_status()
   if state.status.win and vim.api.nvim_win_is_valid(state.status.win) then
     close_status(); return
   end
+  -- belt-and-suspenders: kill any leftover timer before starting fresh
+  if state.status.timer then
+    pcall(function() state.status.timer:stop(); state.status.timer:close() end)
+    state.status.timer = nil
+  end
   local st = fetch_local_status()
   if not st then vim.notify("Spotify not running"); return end
   local remote = get_remote_state()
@@ -674,13 +815,17 @@ function M.toggle_status()
     if not state.status.win or not vim.api.nvim_win_is_valid(state.status.win) then
       close_status(); return
     end
-    local cur = fetch_local_status()
-    if not cur then close_status(); return end
-    local r = get_remote_state()
-    local new_lines = render(cur, r)
-    vim.bo[buf].modifiable = true
-    pcall(vim.api.nvim_buf_set_lines, buf, 0, -1, false, new_lines)
-    vim.bo[buf].modifiable = false
+    fetch_local_status_async(function(cur)
+      if not cur then return end
+      if not state.status.win or not vim.api.nvim_win_is_valid(state.status.win) then return end
+      get_remote_state_async(function(r)
+        if not state.status.win or not vim.api.nvim_win_is_valid(state.status.win) then return end
+        local new_lines = render(cur, r or {})
+        vim.bo[buf].modifiable = true
+        pcall(vim.api.nvim_buf_set_lines, buf, 0, -1, false, new_lines)
+        vim.bo[buf].modifiable = false
+      end)
+    end)
   end))
 end
 
@@ -698,5 +843,15 @@ end
 function M.setup(opts)
   cfg = vim.tbl_deep_extend("force", defaults, opts or {})
 end
+
+vim.api.nvim_create_autocmd("VimLeavePre", {
+  group = vim.api.nvim_create_augroup("SpotifyNvimCleanup", { clear = true }),
+  callback = function()
+    if state.status.timer then
+      pcall(function() state.status.timer:stop(); state.status.timer:close() end)
+      state.status.timer = nil
+    end
+  end,
+})
 
 return M

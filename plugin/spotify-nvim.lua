@@ -26,7 +26,7 @@ local commands = {
   SpotifyPlaylists = "playlists",
   SpotifyLiked = "liked_songs",
   SpotifyRecent = "recently_played",
-  SpotifyTop = "top_tracks",
+  SpotifyNewReleases = "new_releases",
   SpotifyQueue = "queue",
   SpotifyDevices = "devices",
 }
