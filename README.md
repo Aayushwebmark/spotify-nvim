@@ -50,6 +50,7 @@ Optional (for album cover art):
 {
   "Aayushwebmark/spotify-nvim",
   dependencies = { "nvim-telescope/telescope.nvim" },
+  event = "VeryLazy", -- load on startup so now-playing toasts work without opening the widget
   cmd = { "SpotifyAuth", "SpotifyStatus", "SpotifySearch", "SpotifyPlaylists" },
   keys = {
     { "<leader>mm", "<cmd>SpotifyStatus<cr>",    desc = "Spotify status" },
