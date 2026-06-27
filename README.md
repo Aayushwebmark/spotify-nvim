@@ -10,7 +10,13 @@ Control Spotify from Neovim. macOS-first (uses AppleScript + Spotify Web API).
 - Liked Songs, Recently Played, Top Tracks
 - Queue view, add to queue (Spotify API has no public "remove from queue")
 - Device picker (transfer playback)
-- Pinned status widget with progress bar + clickable buttons
+- Pinned status widget with **album cover**, progress bar + clickable buttons
+  - Cover renders as a **real image** (kitty graphics: kitty/wezterm/ghostty, via `snacks.nvim`)
+    or as colored ASCII (`half` / `braille` / `block` / `ascii` styles) anywhere else
+  - Widget border + title **tint to the cover's dominant color**
+- **Like toggle** — heart reflects saved state; one key/click to save/unsave
+- **Mouse**: click the progress bar to seek, scroll to seek/change volume
+- **Now-playing toasts** — popup on every track change, even with the widget closed
 - Lualine helper (`statusline()`)
 - OAuth: tokens persisted, auto-refresh
 
@@ -21,6 +27,12 @@ Control Spotify from Neovim. macOS-first (uses AppleScript + Spotify Web API).
 - `nvim-telescope/telescope.nvim`
 - `curl`
 - Spotify Premium (required by Spotify Web API for playback control)
+
+Optional (for album cover art):
+
+- `imagemagick` (`magick`) — required for ASCII/braille cover art and dominant-color accent
+- `folke/snacks.nvim` + a kitty-graphics terminal (kitty / wezterm / ghostty) — for the
+  real cover image. Falls back to ASCII automatically when unavailable.
 
 ## Setup
 
@@ -57,11 +69,41 @@ Control Spotify from Neovim. macOS-first (uses AppleScript + Spotify Web API).
   },
   opts = {
     status = { position = "top-right" },
+    art   = { mode = "auto", style = "half", accent = true },
+    toast = { enabled = true },
   },
 }
 ```
 
 5. Run `:SpotifyAuth` → browser opens → Allow → done
+
+### Configuration
+
+```lua
+opts = {
+  status = {
+    position  = "top-right", -- top-right | top-left | bottom-right | bottom-left
+    width     = 38,
+    refresh_ms = 2000,
+    border    = "rounded",
+  },
+  art = {
+    enabled = true,
+    mode    = "auto",   -- "auto" = real image if the terminal supports it, else ascii;
+                        -- "image" forces image, "ascii" forces ascii
+    style   = "half",   -- ascii glyphs: "half" (▀, 2x res) | "braille" (⠿, sharpest)
+                        --               | "block" (█) | "ascii" (luminance ramp)
+    cols    = nil,      -- defaults to status.width - 4
+    rows    = nil,      -- defaults to floor(cols / 2)
+    colors  = 256,      -- ascii palette size (higher = smoother)
+    accent  = true,     -- tint widget border + title with the cover's dominant color
+  },
+  toast = {
+    enabled    = true,  -- now-playing popup on track change
+    refresh_ms = 4000,
+  },
+}
+```
 
 ## Commands
 
@@ -70,6 +112,8 @@ Control Spotify from Neovim. macOS-first (uses AppleScript + Spotify Web API).
 | `:SpotifyAuth` | OAuth flow (first-time) |
 | `:SpotifyLogout` | Clear tokens |
 | `:SpotifyStatus` | Toggle status widget |
+| `:SpotifyArtMode` | Flip cover art between image / ascii (live) |
+| `:SpotifyToast` | Toggle now-playing toasts |
 | `:SpotifyPlayPause` | Play/pause |
 | `:SpotifyNext` / `:SpotifyPrev` | Skip |
 | `:SpotifySeekForward` / `:SpotifySeekBackward` | ±10s |
@@ -92,9 +136,10 @@ Control Spotify from Neovim. macOS-first (uses AppleScript + Spotify Web API).
 
 ## Status widget
 
-- Pinned (toggle with `:SpotifyStatus`)
-- Clickable buttons (when focused): `⏮ ⏯ ⏭  ♥ 🔀 🔁`
-- Buffer keymaps: `p` play/pause, `n` next, `b` prev, `f` favorite, `x` shuffle, `r` repeat, `q` close
+- Pinned (toggle with `:SpotifyStatus`), shows the album cover (image or ASCII)
+- Clickable buttons (when focused): `⏮ ⏯ ⏭  ♥ 🔀 🔁` — heart is filled (`♥`) when the track is saved
+- Mouse: **click the progress bar** to seek; **scroll** over the bar to seek ±10s, scroll elsewhere to change volume
+- Buffer keymaps: `p` play/pause, `n` next, `b` prev, `f` like/unlike, `x` shuffle, `r` repeat, `+`/`-` volume, `q` close
 
 ## Lualine
 
